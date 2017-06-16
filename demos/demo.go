@@ -27,7 +27,14 @@ type GobSample struct {
 	Sync     bool
 }
 
-func handleNALU(nalType byte, payload []byte, ts int64) {
+func handleNALU(nalType byte, payload []byte, ts int64, outFlvChan chan rtsp2rtmp.FlvChunk) {
+
+	var flvChk rtsp2rtmp.FlvChunk
+	flvChk.DataSize = uint32(len(payload))
+	flvChk.Timestamp = uint32(ts)
+	flvChk.NaluData = []byte{}
+	flvChk.NaluData = payload
+
 	if nalType == 7 {
 		/*
 			if len(sps) == 0 {
@@ -53,32 +60,49 @@ func handleNALU(nalType byte, payload []byte, ts int64) {
 		log.Println("=== naluCount:%d get I frame ===", naluCount)
 		naluCount++
 		//writeNALU(true, int(ts), payload)
+		flvChk.TagType = rtsp2rtmp.VIDEO_TAG
+		outFlvChan <- flvChk
 	} else {
 		// non-keyframe
 		if syncCount > 0 {
-			log.Println("=== naluCount:%d get non-I frame ===", naluCount)
+			if syncCount%30 == 0 {
+				log.Println("=== naluCount:%d get non-I frame ===", naluCount)
+			}
 			naluCount++
 			//writeNALU(false, int(ts), payload)
+			flvChk.TagType = rtsp2rtmp.VIDEO_TAG
+			outFlvChan <- flvChk
 		}
 	}
 }
 
 func main() {
-	var saveGob bool
-	var url string
-	var maxgop int
+	//var saveGob bool
+	var rtspUrl string
+	var streamName string
+	var rtmpUrl string
+	//var maxgop int
+
+	var inFlvChan chan rtsp2rtmp.FlvChunk
+	var rtmpHandler rtsp2rtmp.RtmpOutboundConnHandler
 
 	// with aac rtsp://admin:123456@80.254.21.110:554/mpeg4cif
 	// with aac rtsp://admin:123456@95.31.251.50:5050/mpeg4cif
 	// 1808p rtsp://admin:123456@171.25.235.18/mpeg4
 	// 640x360 rtsp://admin:123456@94.242.52.34:5543/mpeg4cif
 
-	flag.BoolVar(&saveGob, "s", false, "save to gob file")
-	flag.IntVar(&maxgop, "g", 10, "max gop recording")
-	flag.StringVar(&url, "url", "rtsp://admin:123456@176.99.65.80:558/mpeg4cif", "")
+	//flag.BoolVar(&saveGob, "s", false, "save to gob file")
+	//flag.IntVar(&maxgop, "g", 10, "max gop recording")
+	flag.StringVar(&rtspUrl, "rtspUrl", "rtsp://admin:123456@10.1.51.13/H264?ch=1&subtype=0", "")
+	flag.StringVar(&rtmpUrl, "rtmpUrl", "rtmp://10.1.51.20:1935/myapp/", "")
+	flag.StringVar(&streamName, "streamName", "cv", "")
 	flag.Parse()
 
 	RtspReader := rtsp2rtmp.RtspClientNew()
+
+	inFlvChan = make(chan rtsp2rtmp.FlvChunk, 30*10)
+	rtsp2rtmp.InitRtmpHandler(&rtmpHandler, streamName, rtmpUrl, inFlvChan)
+	rtsp2rtmp.StartPublish(&rtmpHandler)
 
 	quit := false
 
@@ -103,7 +127,7 @@ func main() {
 
 	//var allSamples *GobAllSamples
 
-	if status, message := RtspReader.Client(url); status {
+	if status, message := RtspReader.Client(rtspUrl); status {
 		log.Println("connected")
 		i := 0
 		for {
@@ -139,7 +163,7 @@ func main() {
 					nalType := data[4+rtphdr] & 0x1F
 
 					if nalType >= 1 && nalType <= 23 {
-						handleNALU(nalType, data[4+rtphdr:], ts)
+						handleNALU(nalType, data[4+rtphdr:], ts, inFlvChan)
 					} else if nalType == 28 {
 						isStart := data[4+rtphdr+1]&0x80 != 0
 						isEnd := data[4+rtphdr+1]&0x40 != 0
@@ -152,7 +176,7 @@ func main() {
 						fuBuffer = append(fuBuffer, data[4+rtphdr+2:]...)
 						if isEnd {
 							fuBuffer[0] = nal
-							handleNALU(nalType, fuBuffer, ts)
+							handleNALU(nalType, fuBuffer, ts, inFlvChan)
 						}
 					}
 
